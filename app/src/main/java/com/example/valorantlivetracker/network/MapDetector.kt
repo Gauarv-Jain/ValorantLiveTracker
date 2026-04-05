@@ -63,10 +63,11 @@ class MapDetector {
         var seriesType = "bo1"
         header?.select(".match-header-vs-note")?.forEach {
             val text = it.text().trim().lowercase()
+            Log.d("MatchHeader", "Checking note for series type: '$text'")
             if (text.contains("bo3")) seriesType = "bo3"
             if (text.contains("bo5")) seriesType = "bo5"
         }
-        Log.d("MatchHeader", "Series Type: BO$seriesType")
+        Log.d("MatchHeader", "Series Type from HTML: BO$seriesType")
 
         // --- Match State ---
         val state = when {
@@ -172,10 +173,10 @@ class MapDetector {
             }
         }
 
-        // If all maps have scores → match finished
+        // If all maps have scores, the last one is either currently live or the final map
         val lastPlayed = maps.indexOfLast { it.teamAScore >= 0 && it.teamBScore >= 0 }
 
-        Log.d("MapIndex", "Match finished. Last played map index: $lastPlayed")
+        Log.d("MapIndex", "Active or Last map index: $lastPlayed")
 
         return lastPlayed
     }

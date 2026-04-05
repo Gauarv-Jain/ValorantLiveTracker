@@ -2,6 +2,7 @@ package com.example.valorantlivetracker.models
 
 data class Team(
     val name: String,
+    val shortName: String,
     val logoUrl: String
 )
 
@@ -17,7 +18,8 @@ data class MapScore(
     val teamBTRounds: Int,
     val teamBCTRounds: Int,
 
-    val picker: String? = null
+    val picker: String? = null,
+    val attackingTeam: String? = null // "teamA" or "teamB"
 )
 
 data class Match(
@@ -36,7 +38,15 @@ data class Match(
     val notificationMap: MapScore? = null,  // map to show in the notification
 )
 
-data class SeriesScore(
-    val teamAWins: Int,
-    val teamBWins: Int
+data class UpcomingMatch(
+    val matchTitle: String,
+    val matchUrl: String,
+    val startTime: Long,
+    val teamAName: String,
+    val teamBName: String,
+    val teamALogoUrl: String,
+    val teamBLogoUrl: String,
+    val tournamentName: String,
+    val tournamentLogoUrl: String,
+    val matchTime: String
 )
