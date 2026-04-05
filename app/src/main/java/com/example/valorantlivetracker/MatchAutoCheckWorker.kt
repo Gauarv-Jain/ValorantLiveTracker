@@ -1,9 +1,10 @@
 package com.example.valorantlivetracker
 
 import android.content.Context
+import android.content.Intent
 import android.util.Log
 import androidx.work.*
-import com.example.valorantlivetracker.models.UpcomingMatch
+import java.util.concurrent.TimeUnit
 
 class MatchAutoCheckWorker(context: Context, workerParams: WorkerParameters) : CoroutineWorker(context, workerParams) {
 
@@ -22,6 +23,7 @@ class MatchAutoCheckWorker(context: Context, workerParams: WorkerParameters) : C
         val currentTime = System.currentTimeMillis()
         
         for (match in upcomingMatches) {
+            // Case 1: Match is in the future - schedule a worker
             if (match.startTime > currentTime) {
                 val delay = match.startTime - currentTime
                 Log.d("MatchAutoCheckWorker", "Scheduling ${match.matchTitle} at ${java.util.Date(match.startTime)} (delay: ${delay / 1000 / 60} min)")
@@ -32,11 +34,19 @@ class MatchAutoCheckWorker(context: Context, workerParams: WorkerParameters) : C
                 
                 val request = OneTimeWorkRequestBuilder<MatchStartWorker>()
                     .setInputData(inputData)
-                    .setInitialDelay(delay, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .setInitialDelay(delay, TimeUnit.MILLISECONDS)
                     .addTag("match_start")
                     .build()
                 
                 workManager.enqueue(request)
+            } 
+            // Case 2: Match is currently LIVE - start the service immediately
+            else if (match.matchTime == "LIVE") {
+                Log.d("MatchAutoCheckWorker", "Match ${match.matchTitle} is LIVE. Starting service immediately.")
+                val intent = Intent(applicationContext, MatchService::class.java).apply {
+                    putExtra("MATCH_ID", match.matchUrl)
+                }
+                applicationContext.startForegroundService(intent)
             }
         }
 
@@ -52,7 +62,8 @@ class MatchAutoCheckWorker(context: Context, workerParams: WorkerParameters) : C
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
 
-            val request = PeriodicWorkRequestBuilder<MatchAutoCheckWorker>(24, java.util.concurrent.TimeUnit.HOURS)
+            // Keep the 24-hour interval as requested
+            val request = PeriodicWorkRequestBuilder<MatchAutoCheckWorker>(24, TimeUnit.HOURS)
                 .setConstraints(constraints)
                 .build()
 
@@ -66,6 +77,7 @@ class MatchAutoCheckWorker(context: Context, workerParams: WorkerParameters) : C
         fun cancel(context: Context) {
             Log.d("MatchAutoCheckWorker", "Cancelling all work...")
             WorkManager.getInstance(context).cancelUniqueWork(PERIODIC_WORK_NAME)
+            WorkManager.getInstance(context).cancelAllWorkByTag("match_start")
         }
     }
 }
