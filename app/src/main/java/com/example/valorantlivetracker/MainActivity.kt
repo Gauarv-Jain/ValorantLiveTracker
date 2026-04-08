@@ -13,7 +13,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,6 +30,7 @@ import com.example.valorantlivetracker.models.UpcomingMatch
 import com.example.valorantlivetracker.network.MatchDiscovery
 import com.example.valorantlivetracker.ui.theme.ValorantLiveTrackerTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
@@ -67,33 +71,39 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AutoMatchScreen(modifier: Modifier = Modifier) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val discovery = remember { MatchDiscovery() }
+    val scope = rememberCoroutineScope()
+    
     var matches by remember { mutableStateOf(listOf<UpcomingMatch>()) }
-    var loading by remember { mutableStateOf(true) }
-    var loadingMessage by remember { mutableStateOf("Loading upcoming matches...") }
+    var isRefreshing by remember { mutableStateOf(false) }
 
     val prefs = context.getSharedPreferences("vlr_prefs", Context.MODE_PRIVATE)
     var isAutoEnabled by remember { mutableStateOf(prefs.getBoolean("auto_enabled", true)) }
 
-    LaunchedEffect(Unit) {
-        Log.d("AutoMatchScreen", "🚀 Starting match discovery from UI...")
-        loadingMessage = "🔍 Scanning VLR.gg for matches..."
-        val startTime = System.currentTimeMillis()
+    // Logic to fetch matches
+    val fetchMatches: suspend () -> Unit = {
+        isRefreshing = true
+        Log.d("AutoMatchScreen", "🚀 Starting match discovery...")
         try {
-            val fetchedMatches: List<UpcomingMatch> = withContext(Dispatchers.IO) { discovery.getUpcomingChampionsMatches() }
-            val loadTime = System.currentTimeMillis() - startTime
+            val fetchedMatches: List<UpcomingMatch> = withContext(Dispatchers.IO) { 
+                discovery.getUpcomingChampionsMatches() 
+            }
             matches = fetchedMatches
-            loading = false
-            Log.d("AutoMatchScreen", "✅ Match discovery completed in ${loadTime}ms, found ${fetchedMatches.size} matches")
+            Log.d("AutoMatchScreen", "✅ Found ${fetchedMatches.size} matches")
         } catch (e: Exception) {
-            val loadTime = System.currentTimeMillis() - startTime
-            Log.e("AutoMatchScreen", "💥 Match discovery failed after ${loadTime}ms", e)
-            loading = false
+            Log.e("AutoMatchScreen", "💥 Discovery failed", e)
             matches = emptyList()
+        } finally {
+            isRefreshing = false
         }
+    }
+
+    LaunchedEffect(Unit) {
+        fetchMatches()
     }
 
     Column(modifier.fillMaxSize().padding(16.dp)) {
@@ -109,31 +119,16 @@ fun AutoMatchScreen(modifier: Modifier = Modifier) {
 
         Spacer(Modifier.height(16.dp))
 
-        if (loading) {
-            Column(
-                Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                CircularProgressIndicator()
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    text = loadingMessage,
-                    style = MaterialTheme.typography.bodyMedium,
-                    textAlign = TextAlign.Center
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "This may take 10-30 seconds as we fetch team logos and tournament details from multiple web pages",
-                    style = MaterialTheme.typography.bodySmall,
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                )
-            }
-        } else {
-            if (matches.isEmpty()) {
+        // Pull-to-refresh wrapper
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = { scope.launch { fetchMatches() } },
+            modifier = Modifier.fillMaxSize()
+        ) {
+            if (matches.isEmpty() && !isRefreshing) {
+                // Empty state with scrollable column to allow pull-to-refresh even when empty
                 Column(
-                    Modifier.fillMaxSize(),
+                    Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
@@ -144,86 +139,105 @@ fun AutoMatchScreen(modifier: Modifier = Modifier) {
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "Check the logs for details. There might be no upcoming VCT matches, or the page structure may have changed.",
+                        text = "Check your internet or pull down to refresh.",
                         style = MaterialTheme.typography.bodyMedium,
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
                 }
             } else {
-                LazyColumn {
-                    items(matches) { match ->
-                        Card(
-                            onClick = {
-                                val intent = Intent(context, MatchService::class.java).apply { putExtra("MATCH_ID", match.matchUrl) }
+                // Optimized LazyColumn with keys for smooth scrolling
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    items(
+                        items = matches,
+                        key = { it.matchUrl } // CRITICAL: Use matchUrl as unique key to optimize scrolling and animations
+                    ) { match ->
+                        MatchCard(match = match, onCardClick = {
+                            val intent = Intent(context, MatchService::class.java).apply { putExtra("MATCH_ID", match.matchUrl) }
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                                 context.startForegroundService(intent)
-                            },
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                        ) {
-                            Column(Modifier.padding(16.dp)) {
-                                // Tournament header
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
-                                    if (match.tournamentLogoUrl.isNotEmpty()) {
-                                        AsyncImage(
-                                            model = match.tournamentLogoUrl,
-                                            contentDescription = "Tournament logo",
-                                            modifier = Modifier.size(24.dp).padding(end = 8.dp),
-                                            error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.Gray)
-                                        )
-                                    }
-                                    Text(
-                                        text = match.tournamentName,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.secondary,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    
-                                    // Match Date & Time
-                                    Text(
-                                        text = if (match.matchTime == "LIVE") "LIVE" else match.matchTime,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (match.matchTime == "LIVE") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                            
-                                // Teams row
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    // Team A
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                        if (match.teamALogoUrl.isNotEmpty()) {
-                                            AsyncImage(
-                                                model = match.teamALogoUrl,
-                                                contentDescription = "${match.teamAName} logo",
-                                                modifier = Modifier.size(32.dp).padding(end = 8.dp),
-                                                error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.Gray)
-                                            )
-                                        }
-                                        Text(match.teamAName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
-                                    }
-                                    
-                                    // VS
-                                    Text("VS", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 16.dp))
-                                    
-                                    // Team B
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                        Text(match.teamBName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, textAlign = TextAlign.End, modifier = Modifier.weight(1f))
-                                        if (match.teamBLogoUrl.isNotEmpty()) {
-                                            AsyncImage(
-                                                model = match.teamBLogoUrl,
-                                                contentDescription = "${match.teamBName} logo",
-                                                modifier = Modifier.size(32.dp).padding(start = 8.dp),
-                                                error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.Gray)
-                                            )
-                                        }
-                                    }
-                                }
+                            } else {
+                                context.startService(intent)
                             }
-                        }
+                        })
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Extracted MatchCard to reduce recomposition scope and improve performance.
+ */
+@Composable
+fun MatchCard(match: UpcomingMatch, onCardClick: () -> Unit) {
+    Card(
+        onClick = onCardClick,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            // Tournament header
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 8.dp)) {
+                if (match.tournamentLogoUrl.isNotEmpty()) {
+                    AsyncImage(
+                        model = match.tournamentLogoUrl,
+                        contentDescription = "Tournament logo",
+                        modifier = Modifier.size(24.dp).padding(end = 8.dp),
+                        error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.Gray)
+                    )
+                }
+                Text(
+                    text = match.tournamentName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.weight(1f)
+                )
+                
+                // Match Date & Time
+                Text(
+                    text = if (match.matchTime == "LIVE") "LIVE" else match.matchTime,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (match.matchTime == "LIVE") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                )
+            }
+        
+            // Teams row
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                // Team A
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    if (match.teamALogoUrl.isNotEmpty()) {
+                        AsyncImage(
+                            model = match.teamALogoUrl,
+                            contentDescription = "${match.teamAName} logo",
+                            modifier = Modifier.size(32.dp).padding(end = 8.dp),
+                            error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.Gray)
+                        )
+                    }
+                    Text(match.teamAName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                }
+                
+                // VS
+                Text("VS", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 16.dp))
+                
+                // Team B
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Text(match.teamBName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, textAlign = TextAlign.End, modifier = Modifier.weight(1f))
+                    if (match.teamBLogoUrl.isNotEmpty()) {
+                        AsyncImage(
+                            model = match.teamBLogoUrl,
+                            contentDescription = "${match.teamBName} logo",
+                            modifier = Modifier.size(32.dp).padding(start = 8.dp),
+                            error = androidx.compose.ui.graphics.painter.ColorPainter(androidx.compose.ui.graphics.Color.Gray)
+                        )
                     }
                 }
             }
@@ -247,7 +261,11 @@ fun MainScreen(modifier: Modifier = Modifier) {
             val intent = Intent(context, MatchService::class.java)
             if (!isTracking) {
                 intent.putExtra("MATCH_ID", matchIdInput)
-                context.startForegroundService(intent)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
                 isTracking = true
             } else {
                 context.stopService(intent)

@@ -36,16 +36,16 @@ class VLRMatchPageParser {
         return try {
             val fullUrl = if (matchHref.startsWith("/")) "$baseUrl$matchHref" else "$baseUrl/$matchHref"
             val matchDoc = Jsoup.connect(fullUrl).userAgent(userAgent).timeout(5000).get()
-            
+
             // 1. EXTRACT TIME AND DATE
             // VLR uses 'moment-tz-convert' class for elements that should show local time.
             val timeElements = matchDoc.select(".match-header-date .moment-tz-convert")
-            
+
             // Extract the text content as seen in a browser (e.g., "Tuesday, April 7")
             val dateText = timeElements.firstOrNull { it.attr("data-moment-format") == "dddd, MMMM D" }?.text()?.trim() ?: ""
             // Extract the time text (e.g., "2:30 PM IST")
             val timeText = timeElements.firstOrNull { it.attr("data-moment-format") == "h:mm A z" }?.text()?.trim() ?: ""
-            
+
             // Combine them for UI display
             val combinedFormattedTime = if (dateText.isNotEmpty() && timeText.isNotEmpty()) {
                 "$dateText, $timeText"
@@ -53,61 +53,66 @@ class VLRMatchPageParser {
                 etaText // Fallback to ETA (like "LIVE" or "2h 30m") if specific strings aren't found
             }
 
-            // Also parse the machine-readable UTC timestamp for any background logic/sorting
+            // Also parse the machine-readable timestamp for background scheduling.
+            // IMPORTANT: VLR's "data-utc-ts" is actually in US Eastern Time (America/New_York)
+            // despite the name, which often causes a 4-5 hour offset if parsed as pure UTC.
             val rawTimestamp = timeElements.firstOrNull { it.hasAttr("data-utc-ts") }?.attr("data-utc-ts")
             var timestamp = 0L
             if (!rawTimestamp.isNullOrEmpty()) {
                 try {
-                    // Format: "yyyy-MM-dd HH:mm:ss" in UTC
-                    val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-                    sdf.timeZone = TimeZone.getTimeZone("UTC")
-                    val date = sdf.parse(rawTimestamp)
-                    timestamp = date?.time ?: 0L
+                    if (rawTimestamp.contains("-")) {
+                        // Case: String format "yyyy-MM-dd HH:mm:ss"
+                        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                        // VLR's backend usually stores these in Eastern Time
+                        sdf.timeZone = TimeZone.getTimeZone("America/New_York")
+                        val date = sdf.parse(rawTimestamp)
+                        timestamp = date?.time ?: 0L
+                    } else {
+                        // Case: Unix timestamp (seconds)
+                        timestamp = rawTimestamp.toLongOrNull()?.let { it * 1000 } ?: 0L
+                    }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to parse UTC timestamp: $rawTimestamp", e)
+                    Log.e(TAG, "Failed to parse timestamp: $rawTimestamp", e)
                 }
             }
 
             // 2. EXTRACT TEAM LOGOS
             var teamALogo = matchDoc.select(".match-header-vs img").firstOrNull()?.attr("src") ?: ""
             var teamBLogo = matchDoc.select(".match-header-vs img").lastOrNull()?.attr("src") ?: ""
-            
+
             teamALogo = formatUrl(teamALogo)
             teamBLogo = formatUrl(teamBLogo)
 
             // 3. TOURNAMENT EXTRACTION
-            val tournamentLinkElement = matchDoc.select(".match-header-event a").first() ?: 
+            val tournamentLinkElement = matchDoc.select(".match-header-event a").first() ?:
                                       matchDoc.select("a.match-header-event").first()
-            
+
             val tournamentLink = tournamentLinkElement?.attr("href") ?: ""
             var tournamentName = tournamentLinkElement?.select("div")?.last()?.text()?.trim() ?: tournamentLinkElement?.text()?.trim() ?: "Unknown Tournament"
-            
+
             // Use specific series title if available (e.g., "Group Stage: Week 2")
             val seriesTitle = matchDoc.select(".match-header-event-series").text().trim()
             if (seriesTitle.isNotEmpty()) {
                 tournamentName = seriesTitle
             }
 
-            // 4. VCT VERIFICATION (Is this a high-tier Champions Tour match?)
+            Log.d(TAG, "   Match page found -> Tournament: '$tournamentName' | Timestamp: $timestamp | Formatted: $combinedFormattedTime")
+
+            // 4. VCT VERIFICATION
             var tournamentLogo = ""
-            var isVCT = tournamentName.contains("Champions Tour", true) || 
+            var isVCT = tournamentName.contains("Champions Tour", true) ||
                         tournamentName.contains("VCT", true)
 
-            // If not immediately obvious, check the tournament's own page for VCT status
             if (tournamentLink.isNotEmpty()) {
                 val tournamentUrl = if (tournamentLink.startsWith("/")) "$baseUrl$tournamentLink" else "$baseUrl/$tournamentLink"
                 try {
                     val tourneyDoc = Jsoup.connect(tournamentUrl).userAgent(userAgent).timeout(3000).get()
-                    
-                    // Update tournament name from its official page title
                     val eventPageTitle = tourneyDoc.select(".event-header h1, .wf-title, .event-name").firstOrNull()?.text()?.trim() ?: ""
                     if (eventPageTitle.isNotEmpty()) tournamentName = eventPageTitle
-                    
                     tournamentLogo = formatUrl(tourneyDoc.select(".event-header img, img[alt*='logo'], .event-logo img").firstOrNull()?.attr("src"))
 
-                    // Deep check: Look for VCT keywords in the entire page content
                     val pageContent = tourneyDoc.text()
-                    if (tournamentName.contains("Champions Tour", true) || 
+                    if (tournamentName.contains("Champions Tour", true) ||
                         tournamentName.contains("VCT", true) ||
                         pageContent.contains("Valorant Champions Tour", true)) {
                         isVCT = true
@@ -118,8 +123,7 @@ class VLRMatchPageParser {
             }
 
             // 5. FINAL FILTERING
-            // We want to skip lower-tier "Challengers" or "Game Changers" matches for this specific tracker
-            if (tournamentName.contains("Challengers", ignoreCase = true) || 
+            if (tournamentName.contains("Challengers", ignoreCase = true) ||
                 tournamentName.contains("Game Changers", ignoreCase = true)) {
                 isVCT = false
             }
@@ -131,9 +135,6 @@ class VLRMatchPageParser {
         }
     }
 
-    /**
-     * Ensures image URLs are absolute and use HTTPS.
-     */
     private fun formatUrl(url: String?): String {
         if (url.isNullOrEmpty()) return ""
         return when {

@@ -6,7 +6,13 @@ import android.util.Log
 import androidx.work.*
 import java.util.concurrent.TimeUnit
 
+/**
+ * Background worker that checks for upcoming VCT matches and schedules 
+ * a MatchStartWorker to fire when the match actually begins.
+ */
 class MatchAutoCheckWorker(context: Context, workerParams: WorkerParameters) : CoroutineWorker(context, workerParams) {
+
+    private val schedulingHelper = MatchSchedulingHelper()
 
     override suspend fun doWork(): Result {
         Log.d("MatchAutoCheckWorker", "Fetching upcoming matches...")
@@ -17,16 +23,14 @@ class MatchAutoCheckWorker(context: Context, workerParams: WorkerParameters) : C
         
         val workManager = WorkManager.getInstance(applicationContext)
         
-        // Cancel existing scheduled matches
+        // 1. Cancel existing scheduled matches to avoid duplicate runs
         workManager.cancelAllWorkByTag("match_start")
         
-        val currentTime = System.currentTimeMillis()
-        
         for (match in upcomingMatches) {
-            // Case 1: Match is in the future - schedule a worker
-            if (match.startTime > currentTime) {
-                val delay = match.startTime - currentTime
-                Log.d("MatchAutoCheckWorker", "Scheduling ${match.matchTitle} at ${java.util.Date(match.startTime)} (delay: ${delay / 1000 / 60} min)")
+            // Case 1: Match is in the future - schedule a worker using the helper to calculate delay
+            val delay = schedulingHelper.calculateDelayUntilStart(match.startTime)
+            if (delay > 0) {
+                Log.d("MatchAutoCheckWorker", "Scheduling ${match.matchTitle} with delay: ${delay / 1000 / 60} min")
                 
                 val inputData = Data.Builder()
                     .putString("MATCH_URL", match.matchUrl)
@@ -40,8 +44,8 @@ class MatchAutoCheckWorker(context: Context, workerParams: WorkerParameters) : C
                 
                 workManager.enqueue(request)
             } 
-            // Case 2: Match is currently LIVE - start the service immediately
-            else if (match.matchTime == "LIVE") {
+            // Case 2: Match is currently LIVE - start the service immediately using the helper's check
+            else if (schedulingHelper.shouldStartImmediately(match)) {
                 Log.d("MatchAutoCheckWorker", "Match ${match.matchTitle} is LIVE. Starting service immediately.")
                 val intent = Intent(applicationContext, MatchService::class.java).apply {
                     putExtra("MATCH_ID", match.matchUrl)
