@@ -25,15 +25,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import com.example.valorantlivetracker.MatchAutoCheckWorker
 import com.example.valorantlivetracker.models.UpcomingMatch
 import com.example.valorantlivetracker.network.MatchDiscovery
 import com.example.valorantlivetracker.ui.theme.ValorantLiveTrackerTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.*
 
 class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
@@ -84,19 +81,26 @@ fun AutoMatchScreen(modifier: Modifier = Modifier) {
     val prefs = context.getSharedPreferences("vlr_prefs", Context.MODE_PRIVATE)
     var isAutoEnabled by remember { mutableStateOf(prefs.getBoolean("auto_enabled", true)) }
 
-    // Logic to fetch matches
+    // Logic to fetch matches incrementally
     val fetchMatches: suspend () -> Unit = {
         isRefreshing = true
         Log.d("AutoMatchScreen", "🚀 Starting match discovery...")
+        
+        // Clear existing matches when starting a fresh discovery
+        matches = emptyList()
+        
         try {
-            val fetchedMatches: List<UpcomingMatch> = withContext(Dispatchers.IO) { 
-                discovery.getUpcomingChampionsMatches() 
+            withContext(Dispatchers.IO) { 
+                discovery.getUpcomingChampionsMatches(onMatchFound = { newMatch ->
+                    // CRITICAL: Update the state incrementally as each match is found
+                    scope.launch {
+                        matches = matches + newMatch
+                    }
+                })
             }
-            matches = fetchedMatches
-            Log.d("AutoMatchScreen", "✅ Found ${fetchedMatches.size} matches")
+            Log.d("AutoMatchScreen", "✅ Discovery finished. Total matches: ${matches.size}")
         } catch (e: Exception) {
             Log.e("AutoMatchScreen", "💥 Discovery failed", e)
-            matches = emptyList()
         } finally {
             isRefreshing = false
         }

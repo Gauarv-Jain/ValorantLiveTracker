@@ -43,8 +43,8 @@ class MatchDiscovery {
             var processedCount = 0
             for (item in rawItems) {
                 // Step 2: Early Filtering
-                // We skip tournaments that we know aren't top-tier VCT early to save network calls.
                 if (shouldSkipTournament(item.eventName)) {
+                    // Log.d(TAG, "⏭️ Skipping ${item.eventName} (Early Filter)")
                     continue
                 }
 
@@ -75,7 +75,7 @@ class MatchDiscovery {
                     )
                     matches.add(match)
                     
-                    // CRITICAL: Trigger callback immediately so UI updates incrementally
+                    // CRITICAL: Notify the caller immediately so the UI can update incrementally
                     onMatchFound?.invoke(match)
                     
                     Log.d(TAG, "✅ ADDED: ${match.matchTitle}")
@@ -107,7 +107,7 @@ class MatchDiscovery {
             
             val teamA = parts[0].replace("-", " ").capitalizeWords()
             val teamB = parts[1].split("-")
-                .takeWhile { !it.matches(Regex("\\d{4}")) } // Stop if we hit a year/id
+                .takeWhile { !it.matches(Regex("\\d{4}")) }
                 .joinToString(" ").replace("-", " ").capitalizeWords()
             
             Pair(teamA, teamB)
@@ -117,6 +117,6 @@ class MatchDiscovery {
     }
 
     private fun String.capitalizeWords() = split(" ").joinToString(" ") { 
-        it.replaceFirstChar { char -> if (char.isLowerCase()) char.titlecase() else char.toString() }
+        it.replaceFirstChar { char -> if (char.isLowerCase()) char.titlecase() else char.toString() } 
     }
 }
