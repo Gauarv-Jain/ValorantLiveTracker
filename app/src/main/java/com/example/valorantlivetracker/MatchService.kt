@@ -72,11 +72,31 @@ class MatchService : Service() {
         var lastScoreA = -1
         var lastScoreB = -1
         var lastMapName = ""
+        var matchWasLive = false
 
         while (serviceScope.isActive) {
             try {
                 val match = scraper.getMatchDetails(url)
                 if (match != null) {
+                    
+                    // Track if the match is LIVE or FINISHED
+                    val isLive = "LIVE".equals(match.status, ignoreCase = true)
+                    val isFinished = "FINISHED".equals(match.status, ignoreCase = true)
+                    
+                    if (isLive) matchWasLive = true
+
+                    // TRIGGER: If a live match has now finished, trigger the Post-Match Watch Window
+                    if (matchWasLive && isFinished) {
+                        Log.d(TAG, "Tournament Handoff: Match finished. Triggering watch window for next game.")
+                        MatchAutoCheckWorker.startPostMatchWatchWindow(applicationContext)
+                        
+                        // Show one final update before stopping
+                        updateNotification(match)
+                        delay(5000)
+                        stopSelf()
+                        return
+                    }
+
                     val currentMap = match.notificationMap ?: match.maps.lastOrNull()
 
                     if (currentMap != null) {

@@ -24,6 +24,7 @@ class MatchAutoCheckWorker(context: Context, workerParams: WorkerParameters) : C
         val workManager = WorkManager.getInstance(applicationContext)
         
         // 1. Cancel existing scheduled matches to avoid duplicate runs
+        // We only cancel 'match_start' tags, not the Post-Match Watchers
         workManager.cancelAllWorkByTag("match_start")
         
         for (match in upcomingMatches) {
@@ -59,6 +60,7 @@ class MatchAutoCheckWorker(context: Context, workerParams: WorkerParameters) : C
 
     companion object {
         private const val PERIODIC_WORK_NAME = "MatchAutoCheckWork"
+        private const val WATCH_WINDOW_TAG = "post_match_watcher"
 
         fun schedule(context: Context) {
             Log.d("MatchAutoCheckWorker", "Scheduling daily refresh work...")
@@ -78,10 +80,33 @@ class MatchAutoCheckWorker(context: Context, workerParams: WorkerParameters) : C
             )
         }
 
+        /**
+         * Triggers a sequence of checks after a match ends to catch back-to-back games.
+         * Checks at 10, 20, 22, 24, 25, 27, 30, and 35 minutes.
+         */
+        fun startPostMatchWatchWindow(context: Context) {
+            Log.d("MatchAutoCheckWorker", "🚀 Match ended. Starting Post-Match Watch Window...")
+            val workManager = WorkManager.getInstance(context)
+            
+            val checkIntervals = listOf(10, 20, 22, 24, 25, 27, 30, 35)
+            
+            for (minutes in checkIntervals) {
+                val watchRequest = OneTimeWorkRequestBuilder<MatchAutoCheckWorker>()
+                    .setInitialDelay(minutes.toLong(), TimeUnit.MINUTES)
+                    .addTag(WATCH_WINDOW_TAG)
+                    .build()
+                
+                workManager.enqueue(watchRequest)
+                Log.d("MatchAutoCheckWorker", "   Scheduled check for T+$minutes minutes")
+            }
+        }
+
         fun cancel(context: Context) {
             Log.d("MatchAutoCheckWorker", "Cancelling all work...")
-            WorkManager.getInstance(context).cancelUniqueWork(PERIODIC_WORK_NAME)
-            WorkManager.getInstance(context).cancelAllWorkByTag("match_start")
+            val workManager = WorkManager.getInstance(context)
+            workManager.cancelUniqueWork(PERIODIC_WORK_NAME)
+            workManager.cancelAllWorkByTag("match_start")
+            workManager.cancelAllWorkByTag(WATCH_WINDOW_TAG)
         }
     }
 }
