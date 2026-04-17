@@ -33,6 +33,9 @@ class MatchService : Service() {
     // Concurrent map to track multiple active match jobs by their unique URL
     private val activeJobs = ConcurrentHashMap<String, Job>()
     
+    // Cache for team logos to avoid re-downloading and flickering
+    private val logoCache = ConcurrentHashMap<String, Bitmap>()
+    
     private val TAG = "MatchService"
     private val CHANNEL_ID = "vlr_live_scores"
 
@@ -40,15 +43,20 @@ class MatchService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "Service onCreate called")
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val rawInput = intent?.getStringExtra("MATCH_ID")?.trim() ?: ""
+        Log.d(TAG, "onStartCommand received MATCH_ID: '$rawInput'")
 
         if (rawInput.isEmpty()) {
-            // If no match ID is provided and no jobs are running, stop the service
-            if (activeJobs.isEmpty()) stopSelf()
+            Log.w(TAG, "Empty MATCH_ID received. Active jobs: ${activeJobs.size}")
+            if (activeJobs.isEmpty()) {
+                Log.d(TAG, "No active jobs, stopping self")
+                stopSelf()
+            }
             return START_NOT_STICKY
         }
 
@@ -59,18 +67,23 @@ class MatchService : Service() {
             rawInput.startsWith("/") -> "https://www.vlr.gg$rawInput"
             else -> "https://www.vlr.gg/$rawInput"
         }
+        Log.d(TAG, "Standardized URL: $matchUrl")
 
         // Unique Notification ID derived from the match URL/ID
         val notificationId = generateNotificationId(matchUrl)
+        Log.d(TAG, "Generated Notification ID: $notificationId")
 
         // Only start a new job if we aren't already tracking this match
         if (!activeJobs.containsKey(matchUrl)) {
             Log.d(TAG, "Starting tracker for new match: $matchUrl (ID: $notificationId)")
             
-            // Ensure the service stays in foreground. 
-            // The first match uses the standard startForeground call.
-            if (activeJobs.isEmpty()) {
-                startForeground(notificationId, createInitialNotification("Connecting to match...", matchUrl))
+            // CRITICAL: Ensure the service stays in foreground with a valid initial notification
+            try {
+                val initialNotification = createInitialNotification("Connecting to match...", matchUrl)
+                startForeground(notificationId, initialNotification)
+                Log.d(TAG, "startForeground successful for ID $notificationId")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to startForeground for ID $notificationId", e)
             }
 
             val job = serviceScope.launch {
@@ -85,6 +98,7 @@ class MatchService : Service() {
     }
 
     private suspend fun monitorMatch(url: String, notificationId: Int) {
+        Log.d(TAG, "Monitoring started for $url (ID: $notificationId)")
         var lastScoreA = -1
         var lastScoreB = -1
         var lastMapName = ""
@@ -92,8 +106,10 @@ class MatchService : Service() {
 
         while (serviceScope.isActive) {
             try {
+                Log.d(TAG, "Fetching match details for $url...")
                 val match = scraper.getMatchDetails(url)
                 if (match != null) {
+                    Log.d(TAG, "Match data fetched: ${match.teamA.name} vs ${match.teamB.name} | Status: ${match.status}")
                     val isLive = "LIVE".equals(match.status, ignoreCase = true)
                     val isFinished = "FINISHED".equals(match.status, ignoreCase = true)
                     
@@ -108,14 +124,17 @@ class MatchService : Service() {
                         
                         // Clean up this specific match
                         activeJobs.remove(url)
-                        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                        // Note: We might want to keep the finished notification visible for a while
-                        if (activeJobs.isEmpty()) stopSelf()
+                        Log.d(TAG, "Removed job for $url. Remaining jobs: ${activeJobs.size}")
+                        if (activeJobs.isEmpty()) {
+                            Log.d(TAG, "All matches finished, stopping service")
+                            stopSelf()
+                        }
                         return
                     }
 
                     val currentMap = match.notificationMap ?: match.maps.lastOrNull()
                     if (currentMap != null) {
+                        Log.d(TAG, "Updating notification for ${match.teamA.shortName} vs ${match.teamB.shortName} | Score: ${currentMap.teamAScore}-${currentMap.teamBScore}")
                         if (currentMap.teamAScore != lastScoreA ||
                             currentMap.teamBScore != lastScoreB ||
                             currentMap.mapName != lastMapName ||
@@ -128,17 +147,22 @@ class MatchService : Service() {
                             lastMapName = currentMap.mapName
                         }
                     } else {
+                        Log.d(TAG, "No map data yet for $url, updating status")
                         updateStatus(notificationId, url, "Match Found: ${match.teamA.name} vs ${match.teamB.name}", "Waiting for map...")
                     }
+                } else {
+                    Log.w(TAG, "Scraper returned null for $url")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Monitor loop error for $url", e)
             }
             delay(10000)
         }
+        Log.d(TAG, "Monitoring loop ended for $url")
     }
 
     private fun updateStatus(id: Int, url: String, title: String, text: String) {
+        Log.d(TAG, "updateStatus called for ID $id: $title - $text")
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
@@ -160,6 +184,7 @@ class MatchService : Service() {
 
     private fun updateNotification(match: Match, id: Int) {
         val currentMap = match.notificationMap ?: match.maps.lastOrNull() ?: return
+        Log.d(TAG, "Building full notification for ID $id")
         val remoteViews = RemoteViews(packageName, R.layout.notification_match)
 
         remoteViews.setTextViewText(R.id.tvTeamA, match.teamA.shortName)
@@ -194,6 +219,23 @@ class MatchService : Service() {
         remoteViews.setViewVisibility(R.id.tvArrowA, if (currentMap.picker == "teamA") View.VISIBLE else View.GONE)
         remoteViews.setViewVisibility(R.id.tvArrowB, if (currentMap.picker == "teamB") View.VISIBLE else View.GONE)
 
+        // Apply cached logos immediately if available
+        val bitmapA = logoCache[match.teamA.logoUrl]
+        if (bitmapA != null) {
+            remoteViews.setImageViewBitmap(R.id.ivTeamA, bitmapA)
+        } else {
+            remoteViews.setImageViewResource(R.id.ivTeamA, android.R.drawable.ic_menu_gallery)
+            loadLogo(match.teamA.logoUrl, match, currentMap, R.id.ivTeamA, id)
+        }
+
+        val bitmapB = logoCache[match.teamB.logoUrl]
+        if (bitmapB != null) {
+            remoteViews.setImageViewBitmap(R.id.ivTeamB, bitmapB)
+        } else {
+            remoteViews.setImageViewResource(R.id.ivTeamB, android.R.drawable.ic_menu_gallery)
+            loadLogo(match.teamB.logoUrl, match, currentMap, R.id.ivTeamB, id)
+        }
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("${match.teamA.shortName} vs ${match.teamB.shortName}")
@@ -210,9 +252,6 @@ class MatchService : Service() {
 
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(id, notification)
-
-        loadLogo(match.teamA.logoUrl, remoteViews, match, currentMap, R.id.ivTeamA, id)
-        loadLogo(match.teamB.logoUrl, remoteViews, match, currentMap, R.id.ivTeamB, id)
     }
 
     private fun getMapWinnerInfo(match: Match): String {
@@ -232,32 +271,21 @@ class MatchService : Service() {
         return winnerInfo.toString().removeSuffix(" ⋅ ")
     }
 
-    private fun loadLogo(url: String, remoteViews: RemoteViews, match: Match, currentMap: com.example.valorantlivetracker.models.MapScore, viewId: Int, id: Int) {
+    private fun loadLogo(url: String, match: Match, currentMap: com.example.valorantlivetracker.models.MapScore, viewId: Int, id: Int) {
         if (url.isEmpty()) return
-        Glide.with(this)
-            .asBitmap()
-            .load(url)
-            .into(object : CustomTarget<Bitmap>() {
-                override fun onResourceReady(resource: Bitmap, transition: Transition<in Bitmap>?) {
-                    remoteViews.setImageViewBitmap(viewId, resource)
-                    val notification = NotificationCompat.Builder(this@MatchService, CHANNEL_ID)
-                        .setSmallIcon(R.drawable.ic_notification)
-                        .setContentTitle("${match.teamA.shortName} vs ${match.teamB.shortName}")
-                        .setContentText("${currentMap.teamAScore} - ${currentMap.teamBScore} | ${currentMap.mapName}")
-                        .setCustomContentView(remoteViews)
-                        .setCustomBigContentView(remoteViews)
-                        .setContentIntent(createMatchIntent(match.url))
-                        .setOngoing(true)
-                        .setOnlyAlertOnce(true)
-                        .setPriority(NotificationCompat.PRIORITY_MAX)
-                        .setCategory(Notification.CATEGORY_SERVICE)
-                        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                        .build()
-                    val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                    manager.notify(id, notification)
-                }
-                override fun onLoadCleared(placeholder: Drawable?) {}
-            })
+        
+        serviceScope.launch(Dispatchers.Main) {
+            Glide.with(this@MatchService)
+                .asBitmap()
+                .load(url)
+                .into(object : CustomTarget<Bitmap>() {
+                    override fun onResourceReady(resource: Bitmap, transition: Transition<in Bitmap>?) {
+                        logoCache[url] = resource
+                        updateNotification(match, id)
+                    }
+                    override fun onLoadCleared(placeholder: Drawable?) {}
+                })
+        }
     }
 
     private fun createInitialNotification(text: String, url: String): Notification {
@@ -283,15 +311,19 @@ class MatchService : Service() {
     }
 
     private fun generateNotificationId(url: String): Int {
-        // Extract the numeric match ID from the URL (e.g., vlr.gg/12345/...)
-        val idString = url.split("/").firstOrNull { it.all { char -> char.isDigit() } && it.isNotEmpty() }
-        return idString?.toIntOrNull() ?: (url.hashCode() and 0x7FFFFFFF)
+        // Safe notification ID generation
+        val idString = url.split("/").filter { it.isNotEmpty() }.find { it.all { char -> char.isDigit() } }
+        val id = idString?.toIntOrNull() ?: (url.hashCode() and 0x7FFFFFFF)
+        // Ensure ID is not 0 (standard requirement for notifications)
+        return if (id == 0) 1 else id
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        Log.d(TAG, "Service onDestroy called. Cancelling ${activeJobs.size} jobs.")
         activeJobs.values.forEach { it.cancel() }
         activeJobs.clear()
+        logoCache.clear()
         serviceScope.cancel()
     }
 }

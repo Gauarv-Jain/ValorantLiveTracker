@@ -49,20 +49,20 @@ The following files are verified and working. **Do not modify these files unless
 ### Core Logic & Network
 *   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/network/VLRMatchListParser.kt`: Specialized parser for the VLR.gg `/matches` list page. Extracts raw match item information.
 *   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/network/VLRMatchPageParser.kt`: Specialized parser for individual VLR.gg match pages. Handles team logos, tournament info, and precise text-based timing.
-*   [UNLOCKED] `app/src/main/java/com/example/valorantlivetracker/network/MatchDiscovery.kt`: Orchestrates the discovery of upcoming VCT matches using the list and page parsers.
+*   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/network/MatchDiscovery.kt`: Orchestrates the discovery of upcoming VCT matches using the list and page parsers.
 *   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/network/VLRScraper.kt`: The core engine that fetches live match details, scores, and status updates.
-*   [UNLOCKED] `app/src/main/java/com/example/valorantlivetracker/network/ScoreExtractor.kt`: Parses complex round-by-round tables on VLR to determine scores and side info.
+*   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/network/ScoreExtractor.kt`: Parses complex round-by-round tables on VLR to determine scores and side info.
 *   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/network/MapDetector.kt`: Logic for identifying the current active map and series progress.
 
 ### Background & Scheduling
-*   [UNLOCKED] `app/src/main/java/com/example/valorantlivetracker/MatchAutoCheckWorker.kt`: Periodic worker that refreshes the schedule and handles immediate starts for live matches.
+*   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/MatchAutoCheckWorker.kt`: Periodic worker that refreshes the schedule and handles immediate starts for live matches.
 *   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/MatchSchedulingHelper.kt`: Contains calculations for scheduling delays and start condition checks.
 *   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/MatchStartWorker.kt`: One-time worker that launches the tracker service at the scheduled match start time.
 *   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/MatchBootReceiver.kt`: Reschedules the periodic auto-check worker after a device reboot.
 
 ### UI & Service
-*   [UNLOCKED] `app/src/main/java/com/example/valorantlivetracker/MainActivity.kt`: Main UI entry point with tabbed navigation and manual/auto tracking controls.
-*   [UNLOCKED] `app/src/main/java/com/example/valorantlivetracker/MatchService.kt`: Foreground service that maintains the live scrape loop and updates the score notification.
+*   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/MainActivity.kt`: Main UI entry point with tabbed navigation and manual/auto tracking controls.
+*   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/MatchService.kt`: Foreground service that maintains the live scrape loop and updates the score notification.
 
 ### Models
 *   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/models/Models.kt`: Centralized data models for Teams, Matches, Scores, and Upcoming Matches.
