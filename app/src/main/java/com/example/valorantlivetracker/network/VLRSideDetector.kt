@@ -54,9 +54,9 @@ class VLRSideDetector {
                     // Even index (0, 2, 4...) -> Half 2 side. Odd index (1, 3...) -> Swap back to Half 1 side.
                     val isHalf2Side = (otRoundIndex % 2 == 0)
                     if (isHalf2Side) {
-                        if (teamAStartedOnAttack) "teamB" else "teamA"
-                    } else {
                         if (teamAStartedOnAttack) "teamA" else "teamB"
+                    } else {
+                        if (teamAStartedOnAttack) "teamB" else "teamA"
                     }
                 }
             }

@@ -19,17 +19,22 @@ import com.bumptech.glide.request.transition.Transition
 import com.example.valorantlivetracker.models.Match
 import com.example.valorantlivetracker.network.VLRScraper
 import kotlinx.coroutines.*
+import java.util.concurrent.ConcurrentHashMap
 
+/**
+ * Foreground service that can track multiple live Valorant matches simultaneously.
+ * Each match gets its own ongoing notification.
+ */
 class MatchService : Service() {
 
     private val scraper = VLRScraper()
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var job: Job? = null
+    
+    // Concurrent map to track multiple active match jobs by their unique URL
+    private val activeJobs = ConcurrentHashMap<String, Job>()
+    
     private val TAG = "MatchService"
-    private var currentMatchUrl: String = ""
-
     private val CHANNEL_ID = "vlr_live_scores"
-    private val NOTIFICATION_ID = 101
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -42,10 +47,12 @@ class MatchService : Service() {
         val rawInput = intent?.getStringExtra("MATCH_ID")?.trim() ?: ""
 
         if (rawInput.isEmpty()) {
-            stopSelf()
+            // If no match ID is provided and no jobs are running, stop the service
+            if (activeJobs.isEmpty()) stopSelf()
             return START_NOT_STICKY
         }
 
+        // Standardize the VLR URL
         val matchUrl = when {
             rawInput.startsWith("http") -> rawInput
             rawInput.all { it.isDigit() } -> "https://www.vlr.gg/$rawInput"
@@ -53,22 +60,31 @@ class MatchService : Service() {
             else -> "https://www.vlr.gg/$rawInput"
         }
 
-        currentMatchUrl = matchUrl
+        // Unique Notification ID derived from the match URL/ID
+        val notificationId = generateNotificationId(matchUrl)
 
-        // Ensure immediate foreground state
-        startForeground(NOTIFICATION_ID, createInitialNotification("Connecting..."))
-        startTracking(matchUrl)
+        // Only start a new job if we aren't already tracking this match
+        if (!activeJobs.containsKey(matchUrl)) {
+            Log.d(TAG, "Starting tracker for new match: $matchUrl (ID: $notificationId)")
+            
+            // Ensure the service stays in foreground. 
+            // The first match uses the standard startForeground call.
+            if (activeJobs.isEmpty()) {
+                startForeground(notificationId, createInitialNotification("Connecting to match...", matchUrl))
+            }
+
+            val job = serviceScope.launch {
+                monitorMatch(matchUrl, notificationId)
+            }
+            activeJobs[matchUrl] = job
+        } else {
+            Log.d(TAG, "Already tracking match: $matchUrl")
+        }
+
         return START_STICKY
     }
 
-    private fun startTracking(url: String) {
-        job?.cancel()
-        job = serviceScope.launch {
-            monitorMatch(url)
-        }
-    }
-
-    private suspend fun monitorMatch(url: String) {
+    private suspend fun monitorMatch(url: String, notificationId: Int) {
         var lastScoreA = -1
         var lastScoreB = -1
         var lastMapName = ""
@@ -78,88 +94,82 @@ class MatchService : Service() {
             try {
                 val match = scraper.getMatchDetails(url)
                 if (match != null) {
-                    
-                    // Track if the match is LIVE or FINISHED
                     val isLive = "LIVE".equals(match.status, ignoreCase = true)
                     val isFinished = "FINISHED".equals(match.status, ignoreCase = true)
                     
                     if (isLive) matchWasLive = true
 
-                    // TRIGGER: If a live match has now finished, trigger the Post-Match Watch Window
+                    // Tournament Handoff Logic
                     if (matchWasLive && isFinished) {
-                        Log.d(TAG, "Tournament Handoff: Match finished. Triggering watch window for next game.")
+                        Log.d(TAG, "Match finished: $url. Triggering watch window.")
                         MatchAutoCheckWorker.startPostMatchWatchWindow(applicationContext)
-                        
-                        // Show one final update before stopping
-                        updateNotification(match)
+                        updateNotification(match, notificationId)
                         delay(5000)
-                        stopSelf()
+                        
+                        // Clean up this specific match
+                        activeJobs.remove(url)
+                        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        // Note: We might want to keep the finished notification visible for a while
+                        if (activeJobs.isEmpty()) stopSelf()
                         return
                     }
 
                     val currentMap = match.notificationMap ?: match.maps.lastOrNull()
-
                     if (currentMap != null) {
                         if (currentMap.teamAScore != lastScoreA ||
                             currentMap.teamBScore != lastScoreB ||
                             currentMap.mapName != lastMapName ||
                             lastScoreA == -1) {
 
-                            updateNotification(match)
+                            updateNotification(match, notificationId)
 
                             lastScoreA = currentMap.teamAScore
                             lastScoreB = currentMap.teamBScore
                             lastMapName = currentMap.mapName
                         }
                     } else {
-                        updateStatus("Match Found: ${match.teamA.name} vs ${match.teamB.name}", "Waiting for map...")
+                        updateStatus(notificationId, url, "Match Found: ${match.teamA.name} vs ${match.teamB.name}", "Waiting for map...")
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Monitor loop error", e)
+                Log.e(TAG, "Monitor loop error for $url", e)
             }
             delay(10000)
         }
     }
 
-    private fun updateStatus(title: String, text: String) {
+    private fun updateStatus(id: Int, url: String, title: String, text: String) {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(text)
-            .setContentIntent(createMatchIntent())
+            .setContentIntent(createMatchIntent(url))
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(NOTIFICATION_ID, notification)
+        manager.notify(id, notification)
     }
 
-    private fun createMatchIntent(): PendingIntent {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentMatchUrl))
-        return PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    private fun createMatchIntent(url: String): PendingIntent {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        return PendingIntent.getActivity(this, generateNotificationId(url), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    private fun updateNotification(match: Match) {
+    private fun updateNotification(match: Match, id: Int) {
         val currentMap = match.notificationMap ?: match.maps.lastOrNull() ?: return
         val remoteViews = RemoteViews(packageName, R.layout.notification_match)
 
-        // Set short names instead of full names
         remoteViews.setTextViewText(R.id.tvTeamA, match.teamA.shortName)
         remoteViews.setTextViewText(R.id.tvTeamB, match.teamB.shortName)
         
-        // Set spike visibility for attacking team
         val attackingTeam = currentMap.attackingTeam
         remoteViews.setViewVisibility(R.id.ivSpikeA, if (attackingTeam == "teamA") View.VISIBLE else View.GONE)
         remoteViews.setViewVisibility(R.id.ivSpikeB, if (attackingTeam == "teamB") View.VISIBLE else View.GONE)
-        if (attackingTeam == "teamA") {
-            remoteViews.setImageViewResource(R.id.ivSpikeA, R.drawable.ic_spike)
-        }
-        if (attackingTeam == "teamB") {
-            remoteViews.setImageViewResource(R.id.ivSpikeB, R.drawable.ic_spike)
-        }
+        if (attackingTeam == "teamA") remoteViews.setImageViewResource(R.id.ivSpikeA, R.drawable.ic_spike)
+        if (attackingTeam == "teamB") remoteViews.setImageViewResource(R.id.ivSpikeB, R.drawable.ic_spike)
         
         remoteViews.setTextViewText(R.id.tvScoreTeamA, "${currentMap.teamAScore}")
         remoteViews.setTextViewText(R.id.tvScoreTeamB, "${currentMap.teamBScore}")
@@ -190,7 +200,7 @@ class MatchService : Service() {
             .setContentText("${currentMap.teamAScore} - ${currentMap.teamBScore} | ${currentMap.mapName}")
             .setCustomContentView(remoteViews)
             .setCustomBigContentView(remoteViews)
-            .setContentIntent(createMatchIntent())
+            .setContentIntent(createMatchIntent(match.url))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_MAX)
@@ -199,18 +209,16 @@ class MatchService : Service() {
             .build()
 
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(NOTIFICATION_ID, notification)
+        notificationManager.notify(id, notification)
 
-        loadLogo(match.teamA.logoUrl, remoteViews, match, currentMap, R.id.ivTeamA)
-        loadLogo(match.teamB.logoUrl, remoteViews, match, currentMap, R.id.ivTeamB)
+        loadLogo(match.teamA.logoUrl, remoteViews, match, currentMap, R.id.ivTeamA, id)
+        loadLogo(match.teamB.logoUrl, remoteViews, match, currentMap, R.id.ivTeamB, id)
     }
 
     private fun getMapWinnerInfo(match: Match): String {
         val winnerInfo = StringBuilder()
         val currentMap = match.notificationMap ?: match.maps.lastOrNull()
         val currentIndex = match.maps.indexOf(currentMap)
-        
-        // Only iterate through maps BEFORE the current one
         val limit = if (currentIndex != -1) currentIndex else match.maps.size
         
         for (i in 0 until limit) {
@@ -224,7 +232,7 @@ class MatchService : Service() {
         return winnerInfo.toString().removeSuffix(" ⋅ ")
     }
 
-    private fun loadLogo(url: String, remoteViews: RemoteViews, match: Match, currentMap: com.example.valorantlivetracker.models.MapScore, viewId: Int) {
+    private fun loadLogo(url: String, remoteViews: RemoteViews, match: Match, currentMap: com.example.valorantlivetracker.models.MapScore, viewId: Int, id: Int) {
         if (url.isEmpty()) return
         Glide.with(this)
             .asBitmap()
@@ -238,7 +246,7 @@ class MatchService : Service() {
                         .setContentText("${currentMap.teamAScore} - ${currentMap.teamBScore} | ${currentMap.mapName}")
                         .setCustomContentView(remoteViews)
                         .setCustomBigContentView(remoteViews)
-                        .setContentIntent(createMatchIntent())
+                        .setContentIntent(createMatchIntent(match.url))
                         .setOngoing(true)
                         .setOnlyAlertOnce(true)
                         .setPriority(NotificationCompat.PRIORITY_MAX)
@@ -246,18 +254,18 @@ class MatchService : Service() {
                         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                         .build()
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                    manager.notify(NOTIFICATION_ID, notification)
+                    manager.notify(id, notification)
                 }
                 override fun onLoadCleared(placeholder: Drawable?) {}
             })
     }
 
-    private fun createInitialNotification(text: String): Notification {
+    private fun createInitialNotification(text: String, url: String): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Valorant Live Tracker")
             .setContentText(text)
-            .setContentIntent(createMatchIntent())
+            .setContentIntent(createMatchIntent(url))
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(Notification.CATEGORY_SERVICE)
@@ -274,9 +282,16 @@ class MatchService : Service() {
         }
     }
 
+    private fun generateNotificationId(url: String): Int {
+        // Extract the numeric match ID from the URL (e.g., vlr.gg/12345/...)
+        val idString = url.split("/").firstOrNull { it.all { char -> char.isDigit() } && it.isNotEmpty() }
+        return idString?.toIntOrNull() ?: (url.hashCode() and 0x7FFFFFFF)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        job?.cancel()
+        activeJobs.values.forEach { it.cancel() }
+        activeJobs.clear()
         serviceScope.cancel()
     }
 }
