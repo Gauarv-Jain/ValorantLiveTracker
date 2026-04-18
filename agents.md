@@ -62,7 +62,7 @@ The following files are verified and working. **Do not modify these files unless
 
 ### UI & Service
 *   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/MainActivity.kt`: Main UI entry point with tabbed navigation and manual/auto tracking controls.
-*   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/MatchService.kt`: Foreground service that maintains the live scrape loop and updates the score notification.
+*   [UNLOCKED] `app/src/main/java/com/example/valorantlivetracker/MatchService.kt`: Foreground service that maintains the live scrape loop and updates the score notification.
 
 ### Models
 *   [LOCKED] `app/src/main/java/com/example/valorantlivetracker/models/Models.kt`: Centralized data models for Teams, Matches, Scores, and Upcoming Matches.

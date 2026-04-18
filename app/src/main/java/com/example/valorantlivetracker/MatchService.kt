@@ -193,8 +193,14 @@ class MatchService : Service() {
         val attackingTeam = currentMap.attackingTeam
         remoteViews.setViewVisibility(R.id.ivSpikeA, if (attackingTeam == "teamA") View.VISIBLE else View.GONE)
         remoteViews.setViewVisibility(R.id.ivSpikeB, if (attackingTeam == "teamB") View.VISIBLE else View.GONE)
-        if (attackingTeam == "teamA") remoteViews.setImageViewResource(R.id.ivSpikeA, R.drawable.ic_spike)
-        if (attackingTeam == "teamB") remoteViews.setImageViewResource(R.id.ivSpikeB, R.drawable.ic_spike)
+        if (attackingTeam == "teamA") remoteViews.setImageViewResource(R.id.ivSpikeA,
+            R.drawable.croped_no_bg1
+        )
+        if (attackingTeam == "teamB") remoteViews.setImageViewResource(R.id.ivSpikeB,
+            R.drawable.croped_no_bg1
+        )
+//        if (attackingTeam == "teamA") remoteViews.setImageViewResource(R.id.ivSpikeA, R.drawable.ic_spike)
+//        if (attackingTeam == "teamB") remoteViews.setImageViewResource(R.id.ivSpikeB, R.drawable.ic_spike)
         
         remoteViews.setTextViewText(R.id.tvScoreTeamA, "${currentMap.teamAScore}")
         remoteViews.setTextViewText(R.id.tvScoreTeamB, "${currentMap.teamBScore}")
